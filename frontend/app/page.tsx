@@ -14,6 +14,11 @@ interface PredictionResult {
   };
 }
 
+interface BatchPredictionResult extends PredictionResult {
+  row_index: number;
+  input_data: any;
+}
+
 interface HistoryEntry {
   id: number;
   timestamp: string;
@@ -51,6 +56,13 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  
+  // Batch prediction states
+  const [showBatchMode, setShowBatchMode] = useState(false);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [batchResults, setBatchResults] = useState<BatchPredictionResult[]>([]);
+  const [loadingBatch, setLoadingBatch] = useState(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -145,6 +157,82 @@ export default function Home() {
     }
   };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (!file.name.endsWith('.csv')) {
+        setBatchError('Please upload a CSV file');
+        return;
+      }
+      setCsvFile(file);
+      setBatchError(null);
+      setBatchResults([]);
+    }
+  };
+
+  const handleBatchPredict = async () => {
+    if (!csvFile) {
+      setBatchError('Please select a CSV file first');
+      return;
+    }
+
+    setLoadingBatch(true);
+    setBatchError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', csvFile);
+
+      const response = await axios.post('http://localhost:5000/predict/batch/preview', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      setBatchResults(response.data.predictions);
+    } catch (err: any) {
+      setBatchError(err.response?.data?.error || 'Failed to process CSV file. Make sure it contains all required features.');
+    } finally {
+      setLoadingBatch(false);
+    }
+  };
+
+  const handleDownloadResults = async () => {
+    if (!csvFile) {
+      return;
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append('file', csvFile);
+
+      const response = await axios.post('http://localhost:5000/predict/batch', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        responseType: 'blob',
+      });
+
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `predictions_${new Date().getTime()}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setBatchError('Failed to download results');
+    }
+  };
+
+  const resetBatchMode = () => {
+    setCsvFile(null);
+    setBatchResults([]);
+    setBatchError(null);
+  };
+
   const inputClass = "w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black font-medium shadow-sm hover:border-blue-400 transition-all";
   const selectClass = "w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-black font-medium shadow-sm hover:border-blue-400 transition-all";
 
@@ -163,10 +251,11 @@ export default function Home() {
           </p>
           
           {/* History Toggle Button */}
-          <div className="mt-6">
+          <div className="mt-6 flex gap-4 justify-center">
             <button
               onClick={() => {
                 setShowHistory(!showHistory);
+                setShowBatchMode(false);
                 if (!showHistory && history.length === 0) {
                   fetchHistory();
                 }
@@ -174,6 +263,19 @@ export default function Home() {
               className="bg-white/90 text-purple-700 px-6 py-3 rounded-full font-bold shadow-lg hover:bg-white hover:shadow-xl transform hover:scale-105 transition-all duration-200"
             >
               {showHistory ? '📋 Hide History' : '📜 View Previous Classifications'}
+            </button>
+            
+            <button
+              onClick={() => {
+                setShowBatchMode(!showBatchMode);
+                setShowHistory(false);
+                if (!showBatchMode) {
+                  resetBatchMode();
+                }
+              }}
+              className="bg-gradient-to-r from-green-500 to-emerald-600 text-white px-6 py-3 rounded-full font-bold shadow-lg hover:from-green-600 hover:to-emerald-700 hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+            >
+              {showBatchMode ? '📊 Hide Batch Mode' : '📁 Batch CSV Prediction'}
             </button>
           </div>
         </div>
@@ -236,6 +338,146 @@ export default function Home() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Batch CSV Prediction Section */}
+        {showBatchMode && (
+          <div className="bg-white rounded-2xl shadow-2xl p-8 mb-8 backdrop-blur-sm bg-opacity-95">
+            <h2 className="text-3xl font-bold text-gray-800 mb-6 flex items-center">
+              <span className="text-4xl mr-3">📁</span> Batch CSV Prediction
+            </h2>
+            
+            <div className="space-y-6">
+              {/* File Upload Section */}
+              <div className="bg-gradient-to-r from-green-50 to-emerald-50 p-6 rounded-xl border-2 border-green-200">
+                <h3 className="text-xl font-bold text-gray-800 mb-4">Upload CSV File</h3>
+                <p className="text-gray-600 mb-4">
+                  Upload a CSV file containing network traffic data with all required features. 
+                  The system will predict attack types for all records.
+                </p>
+                
+                <div className="flex items-center gap-4">
+                  <label className="flex-1">
+                    <input
+                      type="file"
+                      accept=".csv"
+                      onChange={handleFileChange}
+                      className="block w-full text-sm text-gray-700 file:mr-4 file:py-3 file:px-6 file:rounded-full file:border-0 file:text-sm file:font-bold file:bg-green-600 file:text-white hover:file:bg-green-700 file:cursor-pointer cursor-pointer"
+                    />
+                  </label>
+                  
+                  {csvFile && (
+                    <button
+                      onClick={resetBatchMode}
+                      className="px-6 py-3 bg-gray-500 text-white rounded-full font-bold hover:bg-gray-600 transition-colors"
+                    >
+                      🔄 Reset
+                    </button>
+                  )}
+                </div>
+                
+                {csvFile && (
+                  <div className="mt-4 p-4 bg-white rounded-lg border-2 border-green-300">
+                    <p className="text-sm font-bold text-gray-800">
+                      📄 Selected file: <span className="text-green-700">{csvFile.name}</span>
+                    </p>
+                    <p className="text-sm text-gray-600 mt-1">
+                      Size: {(csvFile.size / 1024).toFixed(2)} KB
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              {csvFile && (
+                <div className="flex gap-4">
+                  <button
+                    onClick={handleBatchPredict}
+                    disabled={loadingBatch}
+                    className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-4 px-8 rounded-xl hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-lg shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                  >
+                    {loadingBatch ? '🔍 Processing...' : '🚀 Preview Predictions'}
+                  </button>
+                  
+                  {batchResults.length > 0 && (
+                    <button
+                      onClick={handleDownloadResults}
+                      className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 text-white py-4 px-8 rounded-xl hover:from-green-700 hover:to-emerald-700 focus:outline-none focus:ring-4 focus:ring-green-300 font-bold text-lg shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                    >
+                      💾 Download Results CSV
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Error Message */}
+              {batchError && (
+                <div className="p-6 bg-gradient-to-r from-red-50 to-red-100 border-2 border-red-300 rounded-xl shadow-lg">
+                  <p className="text-red-800 font-bold text-lg flex items-center">
+                    <span className="text-3xl mr-3">❌</span> {batchError}
+                  </p>
+                </div>
+              )}
+
+              {/* Results Preview */}
+              {batchResults.length > 0 && (
+                <div className="bg-gradient-to-r from-blue-50 to-purple-50 p-6 rounded-xl border-2 border-blue-200">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-2xl font-bold text-gray-800">
+                      📊 Prediction Results ({batchResults.length} records)
+                    </h3>
+                  </div>
+
+                  {/* Statistics Summary */}
+                  <div className="grid grid-cols-3 gap-4 mb-6">
+                    {['DDoS', 'Intrusion', 'Malware'].map((type) => {
+                      const count = batchResults.filter(r => r.attack_type === type).length;
+                      const percentage = ((count / batchResults.length) * 100).toFixed(1);
+                      return (
+                        <div key={type} className="bg-white p-4 rounded-lg shadow-md">
+                          <p className="text-sm font-semibold text-gray-600">{type}</p>
+                          <p className="text-3xl font-bold text-indigo-700">{count}</p>
+                          <p className="text-sm text-gray-500">{percentage}%</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Results Table */}
+                  <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-100 sticky top-0">
+                        <tr>
+                          <th className="px-4 py-3 text-left font-bold text-gray-700">Row</th>
+                          <th className="px-4 py-3 text-left font-bold text-gray-700">Attack Type</th>
+                          <th className="px-4 py-3 text-left font-bold text-gray-700">Confidence</th>
+                          <th className="px-4 py-3 text-left font-bold text-gray-700">DDoS</th>
+                          <th className="px-4 py-3 text-left font-bold text-gray-700">Intrusion</th>
+                          <th className="px-4 py-3 text-left font-bold text-gray-700">Malware</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {batchResults.map((result) => (
+                          <tr key={result.row_index} className="border-b border-gray-200 hover:bg-white transition-colors">
+                            <td className="px-4 py-3 font-semibold text-gray-700">#{result.row_index + 1}</td>
+                            <td className="px-4 py-3">
+                              <span className={`px-3 py-1 rounded-lg text-xs font-bold ${getAttackColor(result.attack_type)}`}>
+                                {result.attack_type}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 font-semibold text-indigo-600">{result.confidence}%</td>
+                            <td className="px-4 py-3 text-gray-600">{result.probabilities.DDoS}%</td>
+                            <td className="px-4 py-3 text-gray-600">{result.probabilities.Intrusion}%</td>
+                            <td className="px-4 py-3 text-gray-600">{result.probabilities.Malware}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

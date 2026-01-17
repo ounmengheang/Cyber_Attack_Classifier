@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import joblib
 import numpy as np
@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import sqlite3
 import json
+from io import BytesIO, StringIO
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for Next.js frontend
@@ -258,6 +259,175 @@ def clear_history():
         return jsonify({
             'success': True,
             'message': 'History cleared successfully'
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/predict/batch', methods=['POST'])
+def predict_batch():
+    """Predict attack types for a batch of records from CSV file"""
+    try:
+        # Check if file is in request
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        
+        # Check if file is a CSV
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'File must be a CSV'}), 400
+        
+        # Read CSV file
+        try:
+            df = pd.read_csv(file)
+        except Exception as e:
+            return jsonify({'error': f'Failed to read CSV file: {str(e)}'}), 400
+        
+        # Validate that required features are present
+        missing_features = [f for f in TOP_FEATURES if f not in df.columns]
+        if missing_features:
+            return jsonify({
+                'error': 'CSV is missing required features',
+                'missing_features': missing_features,
+                'required_features': TOP_FEATURES
+            }), 400
+        
+        # Select only the top features in the correct order
+        X = df[TOP_FEATURES]
+        
+        # Make predictions
+        predictions = model.predict(X)
+        probabilities = model.predict_proba(X)
+        
+        # Create results DataFrame
+        results_df = df.copy()
+        
+        # Add prediction columns
+        attack_types = []
+        attack_type_codes = []
+        confidences = []
+        prob_ddos = []
+        prob_intrusion = []
+        prob_malware = []
+        
+        for pred, proba in zip(predictions, probabilities):
+            # Handle both string and numeric predictions
+            if isinstance(pred, str):
+                attack_type = pred
+                attack_type_code = ATTACK_CODES.get(pred, -1)
+            else:
+                attack_type_code = int(pred)
+                attack_type = ATTACK_TYPES.get(attack_type_code, 'Unknown')
+            
+            confidence = float(max(proba)) * 100
+            
+            attack_types.append(attack_type)
+            attack_type_codes.append(attack_type_code)
+            confidences.append(round(confidence, 2))
+            prob_ddos.append(round(float(proba[0]) * 100, 2))
+            prob_intrusion.append(round(float(proba[1]) * 100, 2))
+            prob_malware.append(round(float(proba[2]) * 100, 2))
+        
+        # Add prediction results to DataFrame
+        results_df['Predicted_Attack_Type'] = attack_types
+        results_df['Attack_Type_Code'] = attack_type_codes
+        results_df['Confidence'] = confidences
+        results_df['Probability_DDoS'] = prob_ddos
+        results_df['Probability_Intrusion'] = prob_intrusion
+        results_df['Probability_Malware'] = prob_malware
+        
+        # Convert DataFrame to CSV
+        output = StringIO()
+        results_df.to_csv(output, index=False)
+        output.seek(0)
+        
+        # Create BytesIO object for sending file
+        byte_output = BytesIO()
+        byte_output.write(output.getvalue().encode('utf-8'))
+        byte_output.seek(0)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'predictions_{timestamp}.csv'
+        
+        return send_file(
+            byte_output,
+            mimetype='text/csv',
+            as_attachment=True,
+            download_name=filename
+        )
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/predict/batch/preview', methods=['POST'])
+def predict_batch_preview():
+    """Preview predictions for a batch of records from CSV file (returns JSON instead of file)"""
+    try:
+        # Check if file is in request
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        
+        # Check if file is a CSV
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'File must be a CSV'}), 400
+        
+        # Read CSV file
+        try:
+            df = pd.read_csv(file)
+        except Exception as e:
+            return jsonify({'error': f'Failed to read CSV file: {str(e)}'}), 400
+        
+        # Validate that required features are present
+        missing_features = [f for f in TOP_FEATURES if f not in df.columns]
+        if missing_features:
+            return jsonify({
+                'error': 'CSV is missing required features',
+                'missing_features': missing_features,
+                'required_features': TOP_FEATURES
+            }), 400
+        
+        # Select only the top features in the correct order
+        X = df[TOP_FEATURES]
+        
+        # Make predictions
+        predictions = model.predict(X)
+        probabilities = model.predict_proba(X)
+        
+        # Create results list
+        results = []
+        for i, (pred, proba) in enumerate(zip(predictions, probabilities)):
+            # Handle both string and numeric predictions
+            if isinstance(pred, str):
+                attack_type = pred
+                attack_type_code = ATTACK_CODES.get(pred, -1)
+            else:
+                attack_type_code = int(pred)
+                attack_type = ATTACK_TYPES.get(attack_type_code, 'Unknown')
+            
+            confidence = float(max(proba)) * 100
+            
+            result = {
+                'row_index': i,
+                'attack_type': attack_type,
+                'attack_type_code': attack_type_code,
+                'confidence': round(confidence, 2),
+                'probabilities': {
+                    'DDoS': round(float(proba[0]) * 100, 2),
+                    'Intrusion': round(float(proba[1]) * 100, 2),
+                    'Malware': round(float(proba[2]) * 100, 2)
+                },
+                'input_data': df.iloc[i].to_dict()
+            }
+            results.append(result)
+        
+        return jsonify({
+            'success': True,
+            'total_records': len(results),
+            'predictions': results
         })
     
     except Exception as e:
