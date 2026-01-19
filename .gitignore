@@ -51,6 +51,5 @@ Thumbs.db
 *.log
 
 # Machine Learning Models (if large)
-*.pkl
 *.h5
 *.model
